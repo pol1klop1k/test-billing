@@ -1,0 +1,72 @@
+x-app: &app
+  build: .
+  env_file: .env
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  migrate:
+    build: .
+    env_file: .env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "${API_PORT:-8000}:8000"
+
+  outbox:
+    <<: *app
+    command: ["python", "-m", "app.messaging.outbox"]
+
+  consumer:
+    <<: *app
+    command: ["faststream", "run", "app.messaging.consumer:app"]
+
+  webhook-receiver:
+    build: .
+    restart: unless-stopped
+    environment:
+      FAIL_RATE: ${WEBHOOK_RECEIVER_FAIL_RATE:-0}
+    command: ["uvicorn", "webhook_receiver.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "${WEBHOOK_RECEIVER_PORT:-8001}:8001"
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
